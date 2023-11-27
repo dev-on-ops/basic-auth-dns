@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"strings"
 	"net/http"
 	"strconv"
 
@@ -48,16 +50,19 @@ func addDNSRecord(name, recordType, value string) (int64, error) {
 		return 0, err
 	}
 	id, _ := result.LastInsertId()
+	fmt.Printf("record created: %s", name)
 	return id, nil
 }
 
 func updateDNSRecord(id int, record DNSRecord) error {
 	_, err := db.Exec("UPDATE records SET name=?, type=?, value=? WHERE id=?", record.Name, record.Type, record.Value, id)
+	fmt.Sprintf("updated record: %d", id)
 	return err
 }
 
 func deleteDNSRecord(id int) error {
 	_, err := db.Exec("DELETE FROM records WHERE id=?", id)
+	fmt.Sprintf("deleted record: %d", id)
 	return err
 }
 
@@ -75,12 +80,13 @@ func queryDNS(name, recordType string) ([]DNSRecord, error) {
 		if err != nil {
 			return nil, err
 		}
+		fmt.Printf("record read: %s", record.Name)
 		records = append(records, record)
 	}
 
 	return records, nil
 }
-
+/*
 func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	msg := dns.Msg{}
 	msg.SetReply(r)
@@ -103,6 +109,56 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 	w.WriteMsg(&msg)
 }
+*/
+
+func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
+    fmt.Println("Processing DNS request")
+
+    msg := dns.Msg{}
+    msg.SetReply(r)
+    msg.Authoritative = true
+
+    for _, q := range r.Question {
+        // Remove trailing dot, if present, from the domain name
+        domainName := strings.TrimRight(q.Name, ".")
+
+        fmt.Printf("Query: %s %s\n", domainName, dns.TypeToString[q.Qtype])
+
+        records, err := queryDNS(domainName, dns.TypeToString[q.Qtype])
+        if err != nil {
+            log.Printf("Error querying DNS records: %v", err)
+            continue
+        }
+
+        for _, record := range records {
+            fmt.Printf("Record: %s %s %s\n", record.Name, record.Type, record.Value)
+
+            switch q.Qtype {
+            case dns.TypeA:
+                rr := &dns.A{
+                    Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+                    A:   net.ParseIP(record.Value),
+                }
+                msg.Answer = append(msg.Answer, rr)
+                fmt.Printf("A record added: %s\n", domainName)
+            case dns.TypeTXT:
+                rr := &dns.TXT{
+                    Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 3600},
+                    Txt: []string{record.Value},
+                }
+                msg.Answer = append(msg.Answer, rr)
+                fmt.Printf("TXT record added: %s\n", domainName)
+            // Add more cases for other record types as needed
+            }
+        }
+    }
+
+    fmt.Println("Sending DNS response")
+    if err := w.WriteMsg(&msg); err != nil {
+        log.Printf("Error sending DNS response: %v", err)
+    }
+}
+
 
 func handleAPIRequest(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -174,15 +230,15 @@ func handleAPIRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	initDatabase()
+    initDatabase()
 
-	dns.HandleFunc(".", handleDNSRequest)
+    dns.HandleFunc(".", handleDNSRequest)
+    server := &dns.Server{Addr: ":5300", Net: "udp", Handler: dns.DefaultServeMux}
 
-	go func() {
-		http.HandleFunc("/api/records", handleAPIRequest)
-		log.Fatal(http.ListenAndServe(":8080", nil))
-	}()
+    go func() {
+        http.HandleFunc("/api/records", handleAPIRequest)
+        log.Fatal(http.ListenAndServe(":8080", nil))
+    }()
 
-	server := &dns.Server{Addr: ":53", Net: "udp"}
-	log.Fatal(server.ListenAndServe())
+    log.Fatal(server.ListenAndServe())
 }

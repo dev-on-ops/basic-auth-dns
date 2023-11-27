@@ -1,0 +1,8 @@
+go.mod
+go.sum
+dns.db
+*.tfstate
+*.tfstate.backup
+.terraform
+.terraform.lock.hcl
+main
